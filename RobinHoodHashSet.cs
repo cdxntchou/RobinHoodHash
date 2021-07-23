@@ -3,52 +3,49 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Assertions;
 
-// effectively a MultiValueDictionary<int, T>
-//      where the key is assumed to already be a well-behaved hash code that doesn't require further hashing
-//
-// You can build a standard Dictionary using this structure, by using RobinHoodHashSet<Pair<Key, Value>>
-// and adding a little bit of extra code to check for key equality on searches, etc.
+// RobinHoodTable is effectively a MultiValueDictionary<int, T>
+//      where the key is assumed to be a non-zero, well-behaved hash code that doesn't require further hashing
 //
 // internally stores the values in a robin-hood hash table structure.
 // assuming good hash distribution on the key, this gives us quick and cache-friendly search
 // and enumeration of values matching any key
 //
 // Uses 0 as a special-case hash key to indicate an empty slot -- so 0 is not allowed as a hash key.
+//
 // This implementation does not use tombstones, it will properly re-order elements on deletion.
-// So the dictionary is always in a deterministic state based on it's contents and size.
+// This means the dictionary is always in a deterministic order based on it's element hashes and size.
+//
 // When growing the hash table, we don't use the standard "insert all elements to a new table" approach.
 // Rather we resize the arrays in place, and then do a sweep to move elements to their new positions.
-// this has two benefits: 1) for large table sizes, the resize in place can be much faster than allocating a new table
-// (if the allocator is implemented properly, that is)
-// and 2) the sweep is more memory coherent, and guarantees each element is moved at most once,
-// whereas the repeated-insert can move each element many times, particularly when there are a lot of hash collisions.
+// This has two benefits: 
+//   1) for large table sizes, the resize in place can be much faster than allocating a new table (assuming your allocator is smart)
+//   2) the sweep is more memory coherent, and guarantees each element is moved once,
+//      whereas the repeated-insert can move each element many times,
+//      particularly when there are a lot of hash collisions.
 
-[Serializable]  // TODO
-public class RobinHoodHashSet<TValue> : ISerializationCallbackReceiver
+// You can build a standard Dictionary using this structure, by using RobinHoodHashSet<Pair<Key, Value>>
+// and adding a little bit of extra code to check for key equality on searches, etc.
+
+
+//[Serializable]  // TODO
+public class RobinHoodTable<TValue> // : ISerializationCallbackReceiver
 {
     // there are at least three possible layouts for the memory:
-    //    List<int>, List<T>        // better packing, memory coherent searches and key iteration, but access second cache line to grab value
-    //    List<Tuple<int, T>>       // worse packing, searches and key iteration may have large stride, less List overhead, probably fastest option for int-sized T
-    //    List<T>                   // best packing, requires many calls to GetHashCode() which could be (very) slow depending on implementation
+    //    int[], T[]            // better packing, memory coherent searches and key iteration, but access second cache line to grab value
+    //    Tuple<int, T>[]       // worse packing, searches and key iteration may have large stride, less array overhead, probably fastest option for int-sized T
+    //    T[]                   // best packing, least memory, but requires many calls to GetHashCode() which could be (very) slow depending on implementation
     // we choose the first one as the simplest and best general-case behavior
 
     // runtime data
-    int[] m_hashes = null;
-    TValue[] m_values = null;
+    protected int[] m_hashes = null;
+    protected TValue[] m_values = null;
 
-    // serialized data (yay unity serialization.. :P)
-    [SerializeField]
-    int[] hashes = null;
+    protected int element_count = 0;          // number of elements contained in the hash table
+    protected int resize_threshold = 0;       // element_count threshold at which we will resize to the next larger power of 2
 
-    [SerializeField]
-    TValue[] values = null;
+    public const int EMPTY_HASH = 0;
 
-    int element_count = 0;          // number of elements contained in the hash table
-    int resize_threshold = 0;       // element_count threshold at which we will resize to the next larger power of 2
-
-    const int EMPTY_HASH = 0;
-
-    public RobinHoodHashSet(int capacity = 8)
+    public RobinHoodTable(int capacity = 8)
     {
         InitialAllocate(capacity);
     }
@@ -71,10 +68,10 @@ public class RobinHoodHashSet<TValue> : ISerializationCallbackReceiver
         return (FindHashIndex(key) != -1);
     }
 
-    public void Add(int key, TValue item)
+    public void Add(int key, TValue item, bool allowDuplicates = false)
     {
-        if (FindHashIndex(key) >= 0)
-            throw new ArgumentException();
+        if (!allowDuplicates && (FindHashIndex(key) >= 0))
+            throw new ArgumentException(); // an element with the same key already exists
         else
             InsertInternal(key, item);
     }
@@ -412,13 +409,13 @@ public class RobinHoodHashSet<TValue> : ISerializationCallbackReceiver
         int capacity = m_values.Length;
         if ((element_count < 0) || (element_count > capacity))
         {
-            //		printf("ERROR: element count is outside the valid range!\n");
+            // ERROR: element count is outside the valid range!
             result = false;
         }
 
         if ((resize_threshold < 1) || (resize_threshold >= capacity))
         {
-            //		printf("ERROR: resize threshold is outside valid range!\n");
+            // ERROR: resize threshold is outside valid range!
             result = false;
         }
 
@@ -469,7 +466,7 @@ public class RobinHoodHashSet<TValue> : ISerializationCallbackReceiver
                     if (dist > prev_dist + 1)
                     {
                         // ERROR! overall distance would be improved by swapping this and the previous element
-                        //					printf("ERROR!  dib distance is out of order!  elements not a valid rhh table\n");
+                        // ERROR!  dib distance is out of order!  elements not a valid rh table
                         result = false;
                     }
 
@@ -480,35 +477,48 @@ public class RobinHoodHashSet<TValue> : ISerializationCallbackReceiver
 
         if (element_count != valid_count)
         {
-            //		printf("ERROR! element_count is incorrect!\n");
+            // ERROR! element_count is incorrect!
             result = false;
         }
 
         if (empty_count + element_count != capacity)
         {
-            //		printf("ERROR! totals don't add up\n");
+            // ERROR! totals don't add up
             result = false;
         }
 
         if ((element_count > 0) && (dib0_count <= 0))
         {
-            //		printf("ERROR!  must be at least one element at dib 0\n");
+            // ERROR!  must be at least one element at dib 0
             result = false;
         }
 
         if (dib0_count > element_count)
         {
-            //		printf("ERROR!  too many dib 0 elements\n");
+            // ERROR!  too many dib 0 elements
             result = false;
         }
 
         if (max_dib >= element_count)
         {
-            //		printf("ERROR!   max dib is too large!\n");
+            // ERROR!   max dib is too large!
         }
 
         return result;
     }
+}
+
+
+[Serializable]
+public class SerializableRobinHoodTable<TValue> : RobinHoodTable<TValue>, ISerializationCallbackReceiver
+{
+    // serialized data
+    [SerializeField]
+    int[] hashes = null;
+
+    [SerializeField]
+    TValue[] values = null;
+
 
     void ISerializationCallbackReceiver.OnBeforeSerialize()
     {
@@ -562,4 +572,3 @@ public class RobinHoodHashSet<TValue> : ISerializationCallbackReceiver
         values = null;
     }
 }
-
