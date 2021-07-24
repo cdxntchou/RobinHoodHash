@@ -23,10 +23,6 @@ using UnityEngine.Assertions;
 //      whereas the repeated-insert can move each element many times,
 //      particularly when there are a lot of hash collisions.
 
-// You can build a standard Dictionary using this structure, by using RobinHoodHashSet<Pair<Key, Value>>
-// and adding a little bit of extra code to check for key equality on searches, etc.
-
-
 //[Serializable]  // TODO
 public class RobinHoodTable<TValue> // : ISerializationCallbackReceiver
 {
@@ -49,6 +45,9 @@ public class RobinHoodTable<TValue> // : ISerializationCallbackReceiver
     {
         InitialAllocate(capacity);
     }
+
+    public int Count => element_count;
+    public int Capacity => m_values.Length;
 
     public void Clear()
     {
@@ -76,6 +75,16 @@ public class RobinHoodTable<TValue> // : ISerializationCallbackReceiver
             InsertInternal(key, item);
     }
 
+    public bool TryAdd(int key, TValue item)
+    {
+        if (FindHashIndex(key) < 0)
+        {
+            InsertInternal(key, item);
+            return true;
+        }
+        return false;
+    }
+
     public bool Remove(int key)
     {
         int index = FindHashIndex(key);
@@ -99,6 +108,7 @@ public class RobinHoodTable<TValue> // : ISerializationCallbackReceiver
         }
     }
 
+    // this is how we iterate all values matching a key
     public IEnumerable<TValue> GetValues(int key)
     {
         int index = FindHashIndex(key);
@@ -142,7 +152,8 @@ public class RobinHoodTable<TValue> // : ISerializationCallbackReceiver
         }
     }
 
-    int FindHashIndex(int hash)
+    // returns the FIRST index that matches hash, duplicate hashes will follow immediately after (with wrap around)
+    protected int FindHashIndex(int hash)
     {
         Assert.IsTrue(hash != EMPTY_HASH);
 
@@ -185,7 +196,7 @@ public class RobinHoodTable<TValue> // : ISerializationCallbackReceiver
         return bucket_index;
     }
 
-    void Grow()
+    protected void Grow()
     {
         int old_capacity = m_values.Length;
 
