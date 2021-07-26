@@ -1,12 +1,26 @@
 using System;
-//using System.Collections.Generic;
-
-//using UnityEngine;
 using UnityEngine.Assertions;
 
 
-// This is an internal class providing the basic shared hash table functionality
-// it does not have any public API, all of the members are protected
+// This is an internal class providing the shared robin hood hash table structure and functionality
+// it does not have any public API, all of the members are protected, actual public classes must be derived from it
+
+// assuming good hash distribution on the hash keys, this gives us quick and cache-friendly search
+// and enumeration of values matching any hash
+
+// Uses 0 as a special-case hash key to indicate an empty slot -- so 0 is not allowed as a hash key.
+
+// This implementation does not use tombstones, it will properly re-order elements on deletion.
+// This means a valid hash table is always in a deterministic order based on it's element hashes and size.
+
+// When growing the hash table, we don't use the standard "insert all elements to a new table" approach.
+// Rather we resize the arrays in place, and then do a sweep to move elements to their new positions.
+// This has two benefits: 
+//   1) for large table sizes, the resize in place can be much faster than allocating a new table (assuming your allocator is smart)
+//   2) the sweep is more memory coherent, and guarantees each element is moved once,
+//      whereas the repeated-insert can move each element many times,
+//      particularly when there are a lot of hash collisions.
+
 
 public class RobinHoodInternal<TValue>
 {
@@ -24,11 +38,13 @@ public class RobinHoodInternal<TValue>
     protected int resize_threshold = 0;       // element_count threshold at which we will resize to the next larger power of 2
 
     protected const int EMPTY_HASH = 0;
+    protected const int EMPTY_REPLACEMENT_HASH = 0x7FFFFFFF;
 
     // used to setup initial empty state
     protected void InitialAllocateInternal(int capacity)
     {
-        ResizeBuffersInternal(capacity);
+        if (capacity > 0)
+            ResizeBuffersInternal(capacity);
         element_count = 0;
         resize_threshold = capacity - capacity / 3;
     }
